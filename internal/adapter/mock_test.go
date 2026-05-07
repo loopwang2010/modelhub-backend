@@ -397,3 +397,166 @@ func TestMockAsync_KeyConstant(t *testing.T) {
 		t.Fatal("Key drifted")
 	}
 }
+
+func TestMockAsync_EstimateCostDefaultAndOverride(t *testing.T) {
+	if c, _ := NewMockAsyncAdapter().EstimateCost("m", Params{}); c != 60_000 {
+		t.Errorf("default async cost = %d, want 60_000", c)
+	}
+	custom := &MockAsyncAdapter{FixedCost: 99_999}
+	if c, _ := custom.EstimateCost("m", Params{}); c != 99_999 {
+		t.Errorf("FixedCost override async = %d", c)
+	}
+}
+
+func TestMockAsync_SubmitContextCancel(t *testing.T) {
+	a := NewMockAsyncAdapter()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := a.Submit(ctx, "m", Params{}, "k")
+	if err == nil {
+		t.Fatal("expected ctx err")
+	}
+}
+
+func TestMockAsync_PollContextCancel(t *testing.T) {
+	a := NewMockAsyncAdapter()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := a.Poll(ctx, "m", "ref")
+	if err == nil {
+		t.Fatal("expected ctx err")
+	}
+}
+
+func TestMockAsync_CancelContextErr(t *testing.T) {
+	a := NewMockAsyncAdapter()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := a.Cancel(ctx, "m", "ref"); err == nil {
+		t.Fatal("expected ctx err")
+	}
+}
+
+func TestMockAsync_ProgressCurveClamping(t *testing.T) {
+	a := &MockAsyncAdapter{
+		PollStepsToSucceed: 4,
+		ProgressCurve:      []float32{-0.5, 0.5, 2.0},
+	}
+	res, _ := a.Submit(context.Background(), "m", Params{}, "k")
+	ref := res.(AsyncSubmit).UpstreamRef
+	got := []float32{}
+	for i := 0; i < 4; i++ {
+		pr, _ := a.Poll(context.Background(), "m", ref)
+		if pr.Progress != nil {
+			got = append(got, *pr.Progress)
+		}
+	}
+	wantPrefix := []float32{0, 0.5, 1, 1}
+	for i, w := range wantPrefix {
+		if got[i] != w {
+			t.Errorf("progress[%d] = %v, want %v", i, got[i], w)
+		}
+	}
+}
+
+func TestMockAsync_VerifyWebhookBadJSON(t *testing.T) {
+	secret := []byte("k")
+	a := &MockAsyncAdapter{WebhookSupported: true, WebhookSecret: secret}
+	body := []byte(`not-json`)
+	mac := hmacOf(secret, body)
+	hdr := http.Header{}
+	hdr.Set("X-Mock-Signature", mac)
+	if _, err := a.VerifyWebhook(hdr, body); err == nil {
+		t.Fatal("expected JSON parse error")
+	}
+}
+
+func TestMockAsync_VerifyWebhookMissingRef(t *testing.T) {
+	secret := []byte("k")
+	a := &MockAsyncAdapter{WebhookSupported: true, WebhookSecret: secret}
+	body := []byte(`{"status":"succeeded"}`)
+	hdr := http.Header{}
+	hdr.Set("X-Mock-Signature", hmacOf(secret, body))
+	if _, err := a.VerifyWebhook(hdr, body); err == nil {
+		t.Fatal("expected missing-ref error")
+	}
+}
+
+func TestMockAsync_VerifyWebhookUnknownStatus(t *testing.T) {
+	secret := []byte("k")
+	a := &MockAsyncAdapter{WebhookSupported: true, WebhookSecret: secret}
+	body := []byte(`{"ref":"r","status":"weird"}`)
+	hdr := http.Header{}
+	hdr.Set("X-Mock-Signature", hmacOf(secret, body))
+	if _, err := a.VerifyWebhook(hdr, body); err == nil {
+		t.Fatal("expected unknown-status error")
+	}
+}
+
+func TestMockAsync_VerifyWebhookFailedDefaultClass(t *testing.T) {
+	secret := []byte("k")
+	a := &MockAsyncAdapter{WebhookSupported: true, WebhookSecret: secret}
+	body := []byte(`{"ref":"r","status":"failed"}`)
+	hdr := http.Header{}
+	hdr.Set("X-Mock-Signature", hmacOf(secret, body))
+	v, err := a.VerifyWebhook(hdr, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Result.Error.Class != ErrClassUnknown {
+		t.Errorf("default class = %q, want %q", v.Result.Error.Class, ErrClassUnknown)
+	}
+}
+
+func hmacOf(secret, body []byte) string {
+	mac := hmac.New(sha256.New, secret)
+	mac.Write(body)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// Sync-side coverage gap — exercise Submit context cancellation without delay,
+// MockErrorClass on non-mock errors, and AcceptedAt on both result variants.
+func TestMockSync_AcceptedAtPopulated(t *testing.T) {
+	a := NewMockSyncAdapter()
+	res, err := a.Submit(context.Background(), "m", Params{}, "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.AcceptedAt().IsZero() {
+		t.Error("SyncSubmit AcceptedAt is zero")
+	}
+}
+
+func TestMockAsync_AcceptedAtPopulated(t *testing.T) {
+	a := NewMockAsyncAdapter()
+	res, err := a.Submit(context.Background(), "m", Params{}, "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.AcceptedAt().IsZero() {
+		t.Error("AsyncSubmit AcceptedAt is zero")
+	}
+}
+
+func TestMockErrorClass_NonMockError(t *testing.T) {
+	if _, ok := MockErrorClass(errors.New("plain error")); ok {
+		t.Error("MockErrorClass returned ok=true for plain error")
+	}
+}
+
+func TestMockSync_ContextCancelMidDelay(t *testing.T) {
+	a := &MockSyncAdapter{SubmitDelay: time.Hour}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	_, err := a.Submit(ctx, "m", Params{}, "k")
+	if err == nil {
+		t.Fatal("expected cancellation error")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("did not honor cancel: %v", elapsed)
+	}
+}
