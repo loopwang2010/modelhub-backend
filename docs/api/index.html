@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Modelhub API Reference</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:," />
+    <style>body { margin: 0; padding: 0; }</style>
+  </head>
+  <body>
+    <!--
+      Redoc renders the OpenAPI spec inline. The spec URL is served by the
+      backend at /v1/openapi.yaml (production) OR mounted as a relative
+      file in dev. For self-hosted operators who want a static-only docs
+      site, drop a copy of proto/openapi.yaml next to this index.html and
+      set spec-url accordingly.
+    -->
+    <redoc spec-url="/v1/openapi.yaml"></redoc>
+    <script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"></script>
+  </body>
+</html>

@@ -1,0 +1,145 @@
+# Modelhub backend stack — dev + prod-shaped.
+#
+# Runs:
+#   postgres:          primary DB (wallet_ledger, task, task_event, …)
+#   redis:             worker queue + dedup cache
+#   minio:             S3-compatible object storage for source uploads + asset CDN
+#   modelhub-backend:  Go binary (this repo)
+#   nginx:             TLS termination + static modelhub-web + reverse proxy
+#
+# Secrets ('${VAR}') are read from .env at compose time. Use .env.example as
+# the template. NEVER commit a real .env to git.
+
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: modelhub
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: modelhub
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U modelhub -d modelhub"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    ports:
+      # MinIO console on 9001, bound to localhost only for ops access.
+      # The S3 API on 9000 is not exposed externally — backend reaches it
+      # via the docker network as http://minio:9000.
+      - "127.0.0.1:9001:9001"
+
+  modelhub-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      # Database
+      DATABASE_URL: postgres://modelhub:${POSTGRES_PASSWORD}@postgres:5432/modelhub?sslmode=disable
+      MIGRATE_DRIVER: pgx
+
+      # Worker / queue
+      REDIS_URL: redis://redis:6379
+
+      # Object storage (S9.5 asset worker)
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET_OUTPUTS: modelhub-outputs
+      S3_BUCKET_UPLOADS: modelhub-uploads
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_REGION: us-east-1     # MinIO accepts any value
+      S3_FORCE_PATH_STYLE: "true"
+
+      # Auth
+      JWT_SECRET: ${JWT_SECRET}                     # 32+ random bytes
+      WEBHOOK_HMAC_SECRET: ${WEBHOOK_HMAC_SECRET}   # for inbound provider webhooks
+
+      # Provider credentials. In prod, source from a secret store (Vault, SOPS,
+      # AWS Secrets Manager) and inject via secret-mount, NOT env vars in compose.
+      BFL_API_KEY: ${BFL_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcp-sa.json
+
+      # Modelhub-specific
+      MODELHUB_BASE_URL: ${MODELHUB_BASE_URL:-https://modelhub.example.com}
+      MODELHUB_CDN_BASE: ${MODELHUB_CDN_BASE:-https://cdn.modelhub.example.com}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: json
+
+      # Network: GOPROXY for China deployments. Build-time only — included
+      # here in case the binary is built inside the container.
+      GOPROXY: https://goproxy.cn,direct
+
+      # Dev convenience: when DEV_MODE=mock, registry serves mock adapters
+      # instead of real ones. NEVER set this in prod.
+      DEV_MODE: ${DEV_MODE:-}
+    secrets:
+      - gcp-sa.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:6666/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 4
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./deploy/nginx/certs:/etc/nginx/certs:ro
+      # Static modelhub-web build output — populate by running
+      # `npm run build` in modelhub-web/ and copying dist/ here.
+      - ./deploy/static:/var/www/modelhub:ro
+      # Redoc + samples + quickstart, served at /docs
+      - ./docs:/var/www/docs:ro
+      # OpenAPI spec served at /v1/openapi.yaml
+      - ./proto:/var/www/proto:ro
+    depends_on:
+      - modelhub-backend
+
+secrets:
+  gcp-sa.json:
+    # Path on the host to the Google service account JSON file.
+    # `chmod 600` it.
+    file: ./secrets/gcp-sa.json
+
+volumes:
+  pg_data:
+  redis_data:
+  minio_data:
