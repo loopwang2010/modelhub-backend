@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/controller"
+	"github.com/QuantumNous/new-api/internal/wallet"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
@@ -179,6 +180,30 @@ func main() {
 	}
 }
 
+// initModelhubWallet constructs a *wallet.DBWallet sharing the inherited
+// new-api Postgres connection pool and installs it as the controller-layer
+// singleton. Safe to call when the DB is not Postgres — it logs and skips,
+// leaving the wallet hooks as no-ops.
+func initModelhubWallet() {
+	if !common.UsingPostgreSQL {
+		common.SysLog("modelhub: wallet wiring skipped — DB is not PostgreSQL (modelhub wallet endpoints will return 503)")
+		return
+	}
+	if model.DB == nil {
+		common.SysLog("modelhub: wallet wiring skipped — model.DB is nil")
+		return
+	}
+	sqlDB, err := model.DB.DB()
+	if err != nil {
+		common.SysLog("modelhub: wallet wiring failed to acquire *sql.DB: " + err.Error())
+		return
+	}
+	dialect := wallet.PostgresDialect{}
+	w := wallet.New(sqlDB, dialect)
+	controller.SetWallet(w, sqlDB, dialect)
+	common.SysLog("modelhub: wallet wired (PostgreSQL dialect)")
+}
+
 func InjectUmamiAnalytics() {
 	analyticsInjectBuilder := &strings.Builder{}
 	if os.Getenv("UMAMI_WEBSITE_ID") != "" {
@@ -250,6 +275,14 @@ func InitResources() error {
 	}
 
 	model.CheckSetup()
+
+	// S11/S12: wire the modelhub wallet to the same DB the inherited
+	// ORM uses, when running on Postgres (the only dialect the wallet
+	// migrations target). Non-Postgres deployments leave the wallet nil
+	// and the auth hooks degrade to no-ops — the inherited new-api
+	// remains fully functional, but modelhub /v1 wallet endpoints will
+	// return service_unavailable.
+	initModelhubWallet()
 
 	// Initialize options, should after model.InitDB()
 	model.InitOptionMap()

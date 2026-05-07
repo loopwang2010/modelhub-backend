@@ -230,6 +230,13 @@ func Register(c *gin.Context) {
 		})
 		return
 	}
+
+	// S11: provision the modelhub wallet account for the new user
+	// (per ADR-013). Hook is a no-op when the wallet subsystem isn't wired,
+	// so this stays compatible with non-modelhub deployments. Errors are
+	// logged but do not fail registration — see ensureWalletAccountForUser.
+	ensureWalletAccountForUser(c.Request.Context(), insertedUser.Id)
+
 	// 生成默认令牌
 	if constant.GenerateDefaultToken {
 		key, err := common.GenerateKey()
@@ -869,6 +876,17 @@ func CreateUser(c *gin.Context) {
 	if err := cleanUser.Insert(0); err != nil {
 		common.ApiError(c, err)
 		return
+	}
+
+	// S11: provision wallet account for admin-created users too.
+	if cleanUser.Id != 0 {
+		ensureWalletAccountForUser(c.Request.Context(), cleanUser.Id)
+	} else {
+		// Insert may not have rehydrated Id; look up by username.
+		var u model.User
+		if lookupErr := model.DB.Where("username = ?", cleanUser.Username).First(&u).Error; lookupErr == nil {
+			ensureWalletAccountForUser(c.Request.Context(), u.Id)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
