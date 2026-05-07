@@ -54,9 +54,11 @@ require (
 	golang.org/x/oauth2 v0.24.0
 	golang.org/x/sync v0.20.0
 	golang.org/x/sys v0.43.0
+	golang.org/x/time v0.15.0
 	gorm.io/driver/mysql v1.4.3
 	gorm.io/driver/postgres v1.5.2
 	gorm.io/gorm v1.25.2
+	modernc.org/sqlite v1.49.1
 )
 
 require (
@@ -140,5 +142,4 @@ require (
 	modernc.org/libc v1.72.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.49.1 // indirect
 )
