@@ -17,9 +17,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/QuantumNous/new-api/internal/adapter"
+	"github.com/QuantumNous/new-api/internal/catalog"
 )
 
 // getenvLookup is the env-var lookup function used by loadConfig and init.
@@ -31,6 +33,13 @@ var getenvLookup = os.Getenv
 var registerFunc = adapter.Register
 
 func init() {
+	// Catalog manifests register UNCONDITIONALLY (see bfl/init.go for rationale).
+	for _, m := range SeedManifests() {
+		if err := catalog.Register(m); err != nil {
+			log.Printf("googleai: catalog register %s: %v", m.Key, err)
+		}
+	}
+
 	if !shouldRegister(getenvLookup) {
 		return
 	}
