@@ -32,6 +32,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	mathrand "math/rand"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/internal/adapter"
@@ -219,8 +221,8 @@ func (r *Repo) FindByIdempotencyKey(ctx context.Context, key string) (*Task, err
 
 // MarkHeld transitions Created → Held with the given held amount.
 func (r *Repo) MarkHeld(ctx context.Context, id string, held adapter.CostUSD) error {
-	return r.transition(ctx, id, StateHeld, "held", func(tx *sql.Tx, t *Task) error {
-		_, err := tx.ExecContext(ctx, r.dialect.UpdateHeldAmountSQL(), int64(held), id)
+	return r.transition(ctx, id, StateHeld, "held", func(tx *sql.Tx, t *Task, now time.Time) error {
+		_, err := tx.ExecContext(ctx, r.dialect.UpdateHeldAmountSQL(), int64(held), now, id)
 		return err
 	})
 }
@@ -228,9 +230,9 @@ func (r *Repo) MarkHeld(ctx context.Context, id string, held adapter.CostUSD) er
 // MarkSubmittedAsync transitions Held → Submitted and persists the
 // upstream ref + polling URL returned by adapter.Submit.
 func (r *Repo) MarkSubmittedAsync(ctx context.Context, id string, ref adapter.UpstreamRef, pollingURL string, submittedAt time.Time) error {
-	return r.transition(ctx, id, StateSubmitted, "submitted", func(tx *sql.Tx, t *Task) error {
+	return r.transition(ctx, id, StateSubmitted, "submitted", func(tx *sql.Tx, t *Task, now time.Time) error {
 		_, err := tx.ExecContext(ctx, r.dialect.UpdateSubmittedSQL(),
-			string(ref), nullableString(pollingURL), submittedAt.UTC(), id)
+			string(ref), nullableString(pollingURL), submittedAt.UTC(), now, id)
 		return err
 	})
 }
@@ -245,7 +247,8 @@ func (r *Repo) MarkRunning(ctx context.Context, id string) error {
 // remains in flight).
 func (r *Repo) SchedulePoll(ctx context.Context, id string, nextPoll time.Time, attempt int) error {
 	q := r.dialect.UpdateScheduleSQL()
-	_, err := r.db.ExecContext(ctx, q, nextPoll.UTC(), attempt, id)
+	now := time.Now().UTC()
+	_, err := r.db.ExecContext(ctx, q, nextPoll.UTC(), attempt, now, id)
 	if err != nil {
 		return fmt.Errorf("task: schedule poll: %w", err)
 	}
@@ -254,38 +257,34 @@ func (r *Repo) SchedulePoll(ctx context.Context, id string, nextPoll time.Time, 
 
 // MarkSucceeded transitions to Succeeded with the actual cost.
 func (r *Repo) MarkSucceeded(ctx context.Context, id string, actual adapter.CostUSD) error {
-	now := time.Now().UTC()
-	return r.transition(ctx, id, StateSucceeded, "succeeded", func(tx *sql.Tx, t *Task) error {
+	return r.transition(ctx, id, StateSucceeded, "succeeded", func(tx *sql.Tx, t *Task, now time.Time) error {
 		_, err := tx.ExecContext(ctx, r.dialect.UpdateActualCostAndTerminalSQL(),
-			int64(actual), now, id)
+			int64(actual), now, now, id)
 		return err
 	})
 }
 
 // MarkFailed transitions to Failed with the supplied error class + raw body.
 func (r *Repo) MarkFailed(ctx context.Context, id string, class adapter.ErrorClass, msg string, raw []byte) error {
-	now := time.Now().UTC()
-	return r.transition(ctx, id, StateFailed, msg, func(tx *sql.Tx, t *Task) error {
+	return r.transition(ctx, id, StateFailed, msg, func(tx *sql.Tx, t *Task, now time.Time) error {
 		_, err := tx.ExecContext(ctx, r.dialect.UpdateErrorAndTerminalSQL(),
-			string(class), capRaw(raw), now, id)
+			string(class), capRaw(raw), now, now, id)
 		return err
 	})
 }
 
 // MarkTimedOut transitions to TimedOut. Used by the reconciler.
 func (r *Repo) MarkTimedOut(ctx context.Context, id string, reason string) error {
-	now := time.Now().UTC()
-	return r.transition(ctx, id, StateTimedOut, reason, func(tx *sql.Tx, t *Task) error {
-		_, err := tx.ExecContext(ctx, r.dialect.UpdateTerminalAtSQL(), now, id)
+	return r.transition(ctx, id, StateTimedOut, reason, func(tx *sql.Tx, t *Task, now time.Time) error {
+		_, err := tx.ExecContext(ctx, r.dialect.UpdateTerminalAtSQL(), now, now, id)
 		return err
 	})
 }
 
 // MarkCancelled transitions to Cancelled.
 func (r *Repo) MarkCancelled(ctx context.Context, id string, reason string) error {
-	now := time.Now().UTC()
-	return r.transition(ctx, id, StateCancelled, reason, func(tx *sql.Tx, t *Task) error {
-		_, err := tx.ExecContext(ctx, r.dialect.UpdateTerminalAtSQL(), now, id)
+	return r.transition(ctx, id, StateCancelled, reason, func(tx *sql.Tx, t *Task, now time.Time) error {
+		_, err := tx.ExecContext(ctx, r.dialect.UpdateTerminalAtSQL(), now, now, id)
 		return err
 	})
 }
@@ -379,13 +378,61 @@ func (r *Repo) ListEvents(ctx context.Context, taskID string) ([]TaskEvent, erro
 	return out, rows.Err()
 }
 
-// transition runs the assert + update + audit-event in a single tx.
+// transition runs the assert + update + audit-event in a single tx,
+// retrying on transient lock contention (SQLite shared-cache deadlocks
+// on concurrent writers; Postgres serialization failures under high
+// contention). AssertTransition + IsTerminal failures and other
+// programmer-error returns DO NOT retry.
 //
 // The tx serializes a state read with the state write, so concurrent
 // transitions on the same task are linearizable. AssertTransition is
 // called against the current DB state, not the caller's snapshot — this
 // is what makes webhook + worker race correctness work.
-func (r *Repo) transition(ctx context.Context, id string, to TaskState, reason string, mutate func(*sql.Tx, *Task) error) error {
+//
+// `mutate` receives the same `now` used for the state-update statement
+// so all timestamps inside the transition share a single value (clean
+// ordering for the audit log).
+func (r *Repo) transition(ctx context.Context, id string, to TaskState, reason string, mutate func(tx *sql.Tx, t *Task, now time.Time) error) error {
+	const maxRetries = 5
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff with jitter: 5ms, 12ms, 28ms, 65ms.
+			delay := time.Duration(5<<uint(attempt-1)) * time.Millisecond
+			jitter := time.Duration(mathrand.Int63n(int64(delay) / 2))
+			select {
+			case <-time.After(delay + jitter):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		err := r.transitionOnce(ctx, id, to, reason, mutate)
+		if err == nil {
+			return nil
+		}
+		// Non-retryable conditions return immediately.
+		if errors.Is(err, ErrTaskNotFound) || errors.Is(err, ErrTerminalState) {
+			return err
+		}
+		var illegal *ErrIllegalTransition
+		if errors.As(err, &illegal) {
+			return err
+		}
+		// SQLite shared-cache and Postgres serialization conflicts are
+		// retryable. We match by error message substring because the
+		// driver-specific wrapping types are not stably exposed.
+		if isRetryableLockError(err) {
+			lastErr = err
+			continue
+		}
+		return err
+	}
+	return fmt.Errorf("task: transition retries exhausted (%d attempts): %w", maxRetries, lastErr)
+}
+
+// transitionOnce is one attempt of transition. Pulled out so the caller
+// can retry the entire tx (BeginTx → … → Commit) cleanly on lock errors.
+func (r *Repo) transitionOnce(ctx context.Context, id string, to TaskState, reason string, mutate func(tx *sql.Tx, t *Task, now time.Time) error) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("task: begin tx: %w", err)
@@ -410,7 +457,7 @@ func (r *Repo) transition(ctx context.Context, id string, to TaskState, reason s
 		return fmt.Errorf("task: update state: %w", err)
 	}
 	if mutate != nil {
-		if err := mutate(tx, t); err != nil {
+		if err := mutate(tx, t, now); err != nil {
 			return fmt.Errorf("task: mutate during transition: %w", err)
 		}
 	}
@@ -418,6 +465,37 @@ func (r *Repo) transition(ctx context.Context, id string, to TaskState, reason s
 		return fmt.Errorf("task: append event: %w", err)
 	}
 	return tx.Commit()
+}
+
+// isRetryableLockError reports whether err is the kind of transient lock
+// contention that should trigger a transaction retry. Covers:
+//   - SQLite SQLITE_BUSY / SQLITE_LOCKED / shared-cache deadlock
+//   - Postgres SQLSTATE 40001 (serialization_failure) and 40P01 (deadlock_detected)
+//
+// We match on substring because the underlying typed errors live in
+// driver-specific packages that this layer deliberately doesn't import.
+func isRetryableLockError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return containsAny(msg,
+		"database is locked",
+		"database table is locked",
+		"deadlocked",
+		"40001",
+		"40P01",
+		"could not serialize access",
+	)
+}
+
+func containsAny(haystack string, needles ...string) bool {
+	for _, n := range needles {
+		if strings.Contains(haystack, n) {
+			return true
+		}
+	}
+	return false
 }
 
 // appendEvent inserts a row in task_event. When tx is nil, runs against

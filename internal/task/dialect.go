@@ -98,28 +98,31 @@ func (PostgresDialect) UpdateStateSQL() string {
 	return `UPDATE task SET state = $1, updated_at = $2 WHERE id = $3`
 }
 
+// updated_at is always supplied as a parameter (instead of NOW()) so
+// the parameter count matches the SQLite dialect 1:1. This lets the
+// Repo pass the same argument tuple to both dialects without branching.
 func (PostgresDialect) UpdateHeldAmountSQL() string {
-	return `UPDATE task SET held_amount = $1, updated_at = NOW() WHERE id = $2`
+	return `UPDATE task SET held_amount = $1, updated_at = $2 WHERE id = $3`
 }
 
 func (PostgresDialect) UpdateSubmittedSQL() string {
-	return `UPDATE task SET upstream_ref = $1, polling_url = $2, submitted_at = $3, updated_at = NOW() WHERE id = $4`
+	return `UPDATE task SET upstream_ref = $1, polling_url = $2, submitted_at = $3, updated_at = $4 WHERE id = $5`
 }
 
 func (PostgresDialect) UpdateScheduleSQL() string {
-	return `UPDATE task SET next_poll_after = $1, poll_attempt = $2, updated_at = NOW() WHERE id = $3`
+	return `UPDATE task SET next_poll_after = $1, poll_attempt = $2, updated_at = $3 WHERE id = $4`
 }
 
 func (PostgresDialect) UpdateActualCostAndTerminalSQL() string {
-	return `UPDATE task SET actual_cost = $1, terminal_at = $2, updated_at = NOW() WHERE id = $3`
+	return `UPDATE task SET actual_cost = $1, terminal_at = $2, updated_at = $3 WHERE id = $4`
 }
 
 func (PostgresDialect) UpdateErrorAndTerminalSQL() string {
-	return `UPDATE task SET last_error_class = $1, raw_error = $2, terminal_at = $3, updated_at = NOW() WHERE id = $4`
+	return `UPDATE task SET last_error_class = $1, raw_error = $2, terminal_at = $3, updated_at = $4 WHERE id = $5`
 }
 
 func (PostgresDialect) UpdateTerminalAtSQL() string {
-	return `UPDATE task SET terminal_at = $1, updated_at = NOW() WHERE id = $2`
+	return `UPDATE task SET terminal_at = $1, updated_at = $2 WHERE id = $3`
 }
 
 func (PostgresDialect) ClaimNextTaskSQL() string {
