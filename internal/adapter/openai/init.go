@@ -27,9 +27,28 @@ package openai
 
 import (
 	"errors"
+	"log"
 
 	"github.com/QuantumNous/new-api/internal/adapter"
+	"github.com/QuantumNous/new-api/internal/catalog"
 )
+
+// init registers manifests in the catalog UNCONDITIONALLY (see bfl/init.go
+// for rationale). The actual adapter registration is still deferred to
+// RegisterWithFetcher — but /v1/models can list gpt-image-* models from
+// the moment the package imports, even before the upload fetcher is wired.
+func init() {
+	manifests, err := SeedManifests()
+	if err != nil {
+		log.Printf("openai: SeedManifests build failed: %v", err)
+		return
+	}
+	for _, m := range manifests {
+		if err := catalog.Register(m); err != nil {
+			log.Printf("openai: catalog register %s: %v", m.Key, err)
+		}
+	}
+}
 
 // ErrAdapterNotInitialized is returned when Submit is invoked before
 // RegisterWithFetcher has been called. The bootstrap layer (main.go)
