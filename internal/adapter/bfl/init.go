@@ -23,9 +23,22 @@ import (
 	"os"
 
 	"github.com/QuantumNous/new-api/internal/adapter"
+	"github.com/QuantumNous/new-api/internal/catalog"
 )
 
 func init() {
+	// Catalog manifests register UNCONDITIONALLY — even when the adapter
+	// itself can't (no API key in CI, dev-mode mock taking the slot). The
+	// catalog tells /v1/models what we OFFER; the adapter decides whether
+	// we can actually serve it. A model whose adapter isn't registered
+	// returns 503 at submit-time — better UX than hiding it from /v1/models.
+	for _, m := range SeedManifests() {
+		if err := catalog.Register(m); err != nil {
+			// Duplicate-key during tests is fine; log but don't panic.
+			log.Printf("bfl: catalog register %s: %v", m.Key, err)
+		}
+	}
+
 	if os.Getenv(adapter.DevModeEnvVar) == adapter.DevModeValue {
 		// dev-mode mocks take precedence; main.go's bootstrap will
 		// register them under the canonical keys via Replace().
