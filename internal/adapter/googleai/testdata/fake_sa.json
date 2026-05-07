@@ -1,0 +1,12 @@
+{
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "client_email": "test-sa@test-project-123.iam.gserviceaccount.com",
+  "client_id": "111111111111111111111",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/test-sa%40test-project-123.iam.gserviceaccount.com",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEugIBADANBgkqhkiG9w0BAQEFAASCBKQwggSgAgEAAoIBAQDI66w1YIfvTyU6\nrUaJOe3EueDx5HGjpgWjnA5+uprXexyI6eLnc+0lx61gRdAr2j0uIgJ8WaWcISOQ\nVxYJrC5m8e2xpJ1OJfQeuZ+gnE8UCTpgwUZ4GJG+b0n+ptrP4Tvdy4BJH6CN28/C\nRta7TPNXBcJmlElxVHmSVp2pg5O7BjHa7uaTHEaGlPgMcD0TkfxFmlGT3HD9ipAO\nC/hQGM1LeZRncst9hL00q1tCIf5azCREYHaHneJ53glhKAArUwjo7s/6wdfW0L8i\nH3SFr8XOdRSDQ8PHrNfwHS/CPh5bd5Yv2vDTTSPvKK5seYawVtas62KU5Hyt1Ny9\nDi6JjfSHAgMBAAECggEAAtoLktO1WjfnvfDMC/nPjy6W4qpUcjQuGB6Uuwo453OU\n7bhdQw6XmLdMWKxrF4H2hg2UMJiYkdLUrw8eIpOtbzaG5T4as/MQDWPHj2Die8iz\nFHe5DAuE2RjqtM3rL5+V617v93tBcAgb53YbRMy6I0WWUmXVjckwfeGeLPiGXCrL\n+htKBOArDBsX4sBChSUSfklS4p/NBmeCeKj/vmSLTlBcssB6z6mily9u1d4X5maj\n9trcFm5RoAxuQ5XSoJDNfL6NUj/i8vFw0Y1ew8sXjDlSIIycZYe55vBU5ohxQ0P9\nCPbQGPNqS29BrIlHwbY29agLovPOpgFB4D2S14Xh8QKBgQD2VaRHr+Sb5iN6U/Fs\nb4KTOQpe045rx6DlwrIpStmU2ZA4P51fUJvGIPnyJfQ9PVS1HErIhgCD1a+2na4m\n1/khzdjC/FFPLZAFZ4ANTMB9A28wmkwaZxDLWvijuTLit5W8uaPvx/WscTXyVBX/\ngLxeDOqLQuHFx8GXdTJmSYrcWwKBgQDQzdx5khHrB5igQb87WereC/UWYseTyvT7\nry0I00M1dOmNn4dAXUbpzFdK3zgXyfe9bfi4NsoLI0LkLRuCsngwEe2CzNS/jc7M\n+5LC0rnkGKfu4CrM7sTU/XnGqqgOMUkQKdo9k9Lqy3+Fm5lc5au+JSOiQeMH3Oa4\nEIWeOIawRQJ/N88vaQ5wvOFnKE/cYrTg4HoL33AO1FxmF6gEtVY/9XlVM2k2PmIE\n6N6PwkzXCQjcKCxAxS2W8Ed5h+Yxjptf1kjM02BXC5lHB/JrEJhTA//DMT/D/jdb\nlrcFnhJXdQYi5p8ohSrIfkkn778dPMXt52EFwodkn2qica4bvRDsZQKBgAqT4y9l\nbvLxF5JGwmFHVNaa1Hel2WZrSa3WWfmweh8jJRG/myJvl0AQ0ftBA55w5NP71jW+\n0M1vo9vbTSF52QzWW6ncpoptrKRFulGUS0Z62UcIpCJtlhsUHC8sRgcyB/mBpUSp\nUG4EkRk7oLFMET84sm1t2Qp07ls0uxAg3PHhAoGAN9lZyp3zEj+SH0dhDVYnCv4m\nqgBmNCt0XPEsC1kkGpiVfNrksGwTiA+alO6CuKWZNSADafNHjsW5U8rBDxVovEId\n45bjpJ2/ma8+sAdbY8QEhDRfcV1BFrZFooyKHarxPi64WBTV4Z4jIhelEwjJv0d4\ncwgR77yA2CxxgWpnuBQ=\n-----END PRIVATE KEY-----\n",
+  "private_key_id": "deadbeefcafe",
+  "project_id": "test-project-123",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "type": "service_account"
+}

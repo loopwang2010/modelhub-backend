@@ -1,0 +1,9 @@
+{
+  "name": "projects/test-project-123/locations/us-central1/publishers/google/models/veo-3.0-generate-preview/operations/aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb",
+  "done": true,
+  "error": {
+    "code": 8,
+    "message": "Quota exceeded for aiplatform.googleapis.com/online_prediction_requests_per_base_model",
+    "status": "RESOURCE_EXHAUSTED"
+  }
+}

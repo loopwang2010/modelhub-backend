@@ -1,0 +1,9 @@
+{
+  "name": "projects/test-project-123/locations/us-central1/publishers/google/models/veo-3.0-generate-preview/operations/cccccccc-4444-5555-6666-dddddddddddd",
+  "done": true,
+  "error": {
+    "code": 3,
+    "message": "The prompt was blocked by the responsible AI safety policy.",
+    "status": "INVALID_ARGUMENT"
+  }
+}
