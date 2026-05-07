@@ -38,26 +38,35 @@ expects it.
 
 | Table | System | Notes |
 |---|---|---|
-| `users`, `tokens`, `redemptions`, `channels`, `logs`, ... | GORM AutoMigrate | Owned by upstream new-api; keep AutoMigrate |
-| `provider` (renamed from `channel` in S3) | goose | New schema |
+| `users`, `tokens`, `redemptions`, `logs`, ... | GORM AutoMigrate | Owned by upstream new-api; keep AutoMigrate |
+| `channels` | both | Inherited; columns added by S3 (`modality`, `task_kind`) coexist with GORM AutoMigrate. See migrations/0003 for coordination notes. |
 | `task`, `task_event` (S5) | goose | Wallet-coupled |
 | `wallet_ledger`, `wallet_account` (S6) | goose | Audit-grade; needs DOWN |
 | `asset` (S9.5) | goose | New schema |
 
 If you find yourself adding a column to an inherited table, prefer GORM
 AutoMigrate to stay consistent with the rest of that file. If you're adding
-a *new* table, use goose.
+a *new* table, use goose. The `channels` table is the documented exception:
+S3 needs the `modality` and `task_kind` columns to land in goose's history
+so production deploys can apply them BEFORE the new binary boots, but the
+columns are also declared on the GORM `Channel` struct so AutoMigrate sees
+them too. The migration uses `ADD COLUMN IF NOT EXISTS` to make the order
+of (goose first, GORM first) interchangeable.
 
 ## Filename convention
 
 ```
 migrations/
   0001_baseline.sql
-  0002_provider_table.sql                 (S3)
-  0003_task_lifecycle.sql                 (S5)
-  0004_wallet_ledger.sql                  (S6)
+  0002_task_runtime_columns.sql           (S5 — landed first)
+  0003_channel_modality.sql               (S3 — modality + task_kind on channels)
+  0004_wallet_ledger.sql                  (S6 — pending)
   ...
 ```
+
+Note: the order in this list reflects the actual on-disk migrations, not
+the BLUEPRINT step order — S5 landed before S3 in the parallel-agent wave,
+so S5 took the 0002 slot and S3 took 0003.
 
 - 4-digit zero-padded version, monotonically increasing
 - snake_case description after the version
