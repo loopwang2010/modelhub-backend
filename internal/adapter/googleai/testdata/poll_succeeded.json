@@ -1,0 +1,13 @@
+{
+  "name": "projects/test-project-123/locations/us-central1/publishers/google/models/veo-3.0-generate-preview/operations/a1b07c8e-7b5a-4aba-bb34-3e1ccb8afcc8",
+  "done": true,
+  "response": {
+    "@type": "type.googleapis.com/google.cloud.aiplatform.v1.GenerateVideoResponse",
+    "predictions": [
+      {
+        "videoUri": "gs://modelhub-veo3-test/output/a1b07c8e-7b5a-4aba-bb34-3e1ccb8afcc8/sample_0.mp4",
+        "mimeType": "video/mp4"
+      }
+    ]
+  }
+}
