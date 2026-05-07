@@ -1,0 +1,4 @@
+{
+  "id": "abc-123-456",
+  "polling_url": "https://api.bfl.ai/v1/get_result?id=abc-123-456"
+}
