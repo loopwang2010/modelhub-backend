@@ -1,0 +1,13 @@
+{
+  "created": 1701234567,
+  "data": [
+    { "b64_json": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4DwAAAQEBABtuFvwAAAAASUVORK5CYII=" },
+    { "b64_json": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4DwAAAQEBABtuFvwAAAAASUVORK5CYII=" }
+  ],
+  "model": "gpt-image-1",
+  "usage": {
+    "input_tokens": 1500,
+    "output_tokens": 11356,
+    "total_tokens": 12856
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "created": 1701234567,
+  "data": [
+    { "url": "https://oaidalleapiprodscus.blob.core.windows.net/private/example/img-abc.png?se=2026-05-08T12%3A00%3A00Z&sp=r" }
+  ],
+  "model": "gpt-image-1.5",
+  "usage": {
+    "input_tokens": 800,
+    "output_tokens": 3200,
+    "total_tokens": 4000
+  }
+}

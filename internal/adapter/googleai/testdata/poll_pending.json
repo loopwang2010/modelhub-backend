@@ -1,0 +1,8 @@
+{
+  "name": "projects/test-project-123/locations/us-central1/publishers/google/models/veo-3.0-generate-preview/operations/a1b07c8e-7b5a-4aba-bb34-3e1ccb8afcc8",
+  "done": false,
+  "metadata": {
+    "@type": "type.googleapis.com/google.cloud.aiplatform.v1.GenerateVideoOperationMetadata",
+    "createTime": "2026-05-08T10:15:00Z"
+  }
+}

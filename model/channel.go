@@ -53,6 +53,29 @@ type Channel struct {
 
 	OtherSettings string `json:"settings" gorm:"column:settings"` // 其他设置，存储azure版本等不需要检索的信息，详见dto.ChannelOtherSettings
 
+	// ─── Modelhub S3: multi-modality awareness (BLUEPRINT.md §S3) ───────────
+	//
+	// The inherited new-api codebase only ever modeled LLM channels (text-in,
+	// text-out via /v1/chat/completions). Modelhub fans out to image/video/edit
+	// providers too, so we tag every channel with its OUTPUT modality and its
+	// dispatch task kind.
+	//
+	// Defaults are chosen for backwards compatibility with the inherited
+	// schema: rows that pre-date this column report Modality="llm" and
+	// TaskKind="streaming", which is exactly how every existing /v1/chat/
+	// completions channel behaves. New non-LLM channels (image, video, etc.)
+	// MUST set these explicitly via the admin API.
+	//
+	// Storage notes:
+	//   - Both columns are NOT NULL with literal defaults so GORM AutoMigrate
+	//     and the goose migration agree on the column shape.
+	//   - We use the modality package (internal/modality) for parsing and
+	//     validation at controller boundaries; the struct itself stays a
+	//     plain string to avoid coupling the inherited model layer to the
+	//     adapter package's runtime types.
+	Modality string `json:"modality" gorm:"type:varchar(32);default:'llm';not null;index"`
+	TaskKind string `json:"task_kind" gorm:"type:varchar(32);default:'streaming';not null;index"`
+
 	// cache info
 	Keys []string `json:"-" gorm:"-"`
 }
@@ -418,6 +441,37 @@ func (channel *Channel) GetWeight() int {
 		return 0
 	}
 	return int(*channel.Weight)
+}
+
+// GetModality returns the channel's Modality, falling back to the
+// modelhub default ("llm") for rows that pre-date the S3 schema change.
+// Always safe to call; never returns the empty string.
+//
+// See internal/modality.DefaultModality for the canonical default. The
+// helper exists here so that callers in inherited code paths don't need
+// to import internal/modality just to dereference a string.
+func (channel *Channel) GetModality() string {
+	if channel.Modality == "" {
+		return "llm"
+	}
+	return channel.Modality
+}
+
+// GetTaskKind returns the channel's TaskKind, falling back to the
+// modelhub default ("streaming") for rows that pre-date the S3 schema
+// change. Always safe to call; never returns the empty string.
+func (channel *Channel) GetTaskKind() string {
+	if channel.TaskKind == "" {
+		return "streaming"
+	}
+	return channel.TaskKind
+}
+
+// IsLLMChannel reports whether the channel routes /v1/chat/completions
+// style requests. Used by the relay layer to keep the inherited LLM
+// path working unchanged for rows that defaulted to Modality="llm".
+func (channel *Channel) IsLLMChannel() bool {
+	return channel.GetModality() == "llm"
 }
 
 func (channel *Channel) GetBaseURL() string {

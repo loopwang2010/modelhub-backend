@@ -1,0 +1,463 @@
+openapi: 3.1.0
+info:
+  title: modelhub API
+  version: 0.1.0
+  summary: |
+    Unified, modality-agnostic generation API for image, video, audio,
+    edit, and text models.
+  description: |
+    All generations flow through a single polymorphic endpoint. The wire
+    contract is locked by ADR-009 (envelope) and ADR-018 (no upstream
+    passthrough). Responses are uniform across modalities.
+
+    ## Authentication
+
+    Sprint 1 ships JWT-based auth. Send `Authorization: Bearer <token>`
+    on every request except `/v1/auth/*` and `/healthz`.
+
+    ## Idempotency
+
+    Optional `idempotency_key` on POST `/v1/generations`. When omitted the
+    server derives one from `(account_id, model, canonical_params, time_bucket=60s)`.
+    Replays within the bucket return the original task envelope rather
+    than duplicate-charging.
+
+    ## Async vs Sync
+
+    Both shapes return `GenerationResponse`. Sync calls return `status="succeeded"`
+    with `output` populated; async calls return `status="queued"` and the
+    client polls `GET /v1/generations/{id}` or supplies a `webhook` URL.
+
+servers:
+  - url: https://api.modelhub.com
+    description: Production
+  - url: http://localhost:6666
+    description: Local dev (DEV_MODE=mock)
+
+tags:
+  - name: generations
+    description: Run a model and retrieve results.
+  - name: models
+    description: Catalog of available models.
+  - name: uploads
+    description: Pre-signed URLs for image/audio inputs.
+  - name: wallet
+    description: Credit balance and ledger.
+  - name: auth
+    description: Authentication and current user.
+
+paths:
+  /v1/generations:
+    post:
+      tags: [generations]
+      summary: Submit a generation
+      operationId: createGeneration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerationRequest'
+            examples:
+              flux_image:
+                summary: Flux Pro 1.1 image
+                value:
+                  model: flux-pro-1.1
+                  params:
+                    prompt: "a forest at dawn"
+                    width: 1024
+                    height: 1024
+              veo_video:
+                summary: Veo 3 video
+                value:
+                  model: veo-3.0-pro
+                  params:
+                    prompt: "a slow zoom-out from a city skyline"
+                    duration_seconds: 5
+      responses:
+        '200':
+          description: Sync task completed inline.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenerationResponse' }
+        '202':
+          description: Async task accepted; poll or wait for webhook.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenerationResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /v1/generations/{id}:
+    get:
+      tags: [generations]
+      summary: Get a generation by id
+      operationId: getGeneration
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, pattern: '^gen_[A-Za-z0-9_-]+$' }
+      responses:
+        '200':
+          description: Current state of the generation.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenerationResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/uploads:
+    post:
+      tags: [uploads]
+      summary: Mint a pre-signed PUT URL for an upload
+      operationId: createUpload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UploadRequest' }
+      responses:
+        '201':
+          description: Pre-signed URL minted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UploadResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/models:
+    get:
+      tags: [models]
+      summary: List available models
+      operationId: listModels
+      responses:
+        '200':
+          description: All enabled models.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/ModelManifest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/wallet/balance:
+    get:
+      tags: [wallet]
+      summary: Get current wallet balance
+      operationId: getWalletBalance
+      responses:
+        '200':
+          description: Balance in micro-USD.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WalletBalance' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/auth/me:
+    get:
+      tags: [auth]
+      summary: Get the current user
+      operationId: getCurrentUser
+      responses:
+        '200':
+          description: Current user.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    GenerationRequest:
+      type: object
+      required: [model, params]
+      properties:
+        model:
+          type: string
+          description: Model key from /v1/models.
+          example: flux-pro-1.1
+        params:
+          type: object
+          description: |
+            Per-model parameters. Shape is validated against the model's
+            InputSchema. See /v1/models for each model's exact schema.
+          additionalProperties: true
+        idempotency_key:
+          type: string
+          description: |
+            Optional; replays within a 60s bucket return the original task.
+        webhook:
+          type: string
+          format: uri
+          description: |
+            Optional HTTPS URL we POST when the task reaches a terminal state.
+
+    GenerationResponse:
+      type: object
+      required: [id, model, status, modality, task_kind, created_at, credits]
+      properties:
+        id:
+          type: string
+          pattern: '^gen_[A-Za-z0-9_-]+$'
+        model:
+          type: string
+        status:
+          $ref: '#/components/schemas/Status'
+        modality:
+          $ref: '#/components/schemas/Modality'
+        task_kind:
+          $ref: '#/components/schemas/TaskKind'
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: [string, 'null']
+          format: date-time
+        output:
+          oneOf:
+            - { $ref: '#/components/schemas/Output' }
+            - type: 'null'
+        error:
+          oneOf:
+            - { $ref: '#/components/schemas/Error' }
+            - type: 'null'
+        credits:
+          $ref: '#/components/schemas/Credits'
+
+    Status:
+      type: string
+      enum: [queued, running, succeeded, failed, cancelled]
+
+    Modality:
+      type: string
+      enum: [image, video, audio, edit, llm]
+
+    TaskKind:
+      type: string
+      enum: [sync, async, streaming]
+
+    Output:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [image_url, video_url, audio_url, text, base64]
+        url:
+          type: string
+          format: uri
+          description: |
+            Modelhub-hosted CDN URL when type ends with `_url`. NEVER an
+            upstream URL — see ADR-018 / AP-19.
+        text:
+          type: string
+        base64:
+          type: string
+        mime_type:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+        metadata:
+          type: object
+          additionalProperties: true
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [auth, payment, rate_limit, content_policy, upstream, not_found, timeout, unknown, invalid_request, model_not_found, model_disabled, provider_unavailable]
+        message:
+          type: string
+
+    Credits:
+      type: object
+      required: [held, settled, refunded]
+      properties:
+        held:
+          type: integer
+          format: int64
+          description: Reserved at task start, in micro-USD.
+        settled:
+          type: integer
+          format: int64
+        refunded:
+          type: integer
+          format: int64
+
+    UploadRequest:
+      type: object
+      required: [content_type, size_bytes]
+      properties:
+        content_type:
+          type: string
+          enum:
+            - image/jpeg
+            - image/png
+            - image/webp
+            - image/gif
+            - audio/mpeg
+            - audio/wav
+            - audio/mp3
+            - audio/ogg
+        size_bytes:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 52428800
+        filename:
+          type: string
+
+    UploadResponse:
+      type: object
+      required: [upload_id, upload_url, method, expires_at, headers]
+      properties:
+        upload_id:
+          type: string
+          pattern: '^upload_[a-f0-9]+$'
+        upload_url:
+          type: string
+          format: uri
+        method:
+          type: string
+          enum: [PUT]
+        expires_at:
+          type: string
+        headers:
+          type: object
+          additionalProperties: { type: string }
+
+    ModelManifest:
+      description: |
+        Public-facing model metadata. Internal fields (UpstreamModel,
+        Provider, timestamps) are stripped per ADR-018 — see the `json:"-"`
+        tags in catalog.ModelManifest.
+      type: object
+      required: [key, name, modality, task_kind, input_schema, price_formula]
+      properties:
+        key:
+          type: string
+        name:
+          type: string
+        modality:
+          $ref: '#/components/schemas/Modality'
+        task_kind:
+          $ref: '#/components/schemas/TaskKind'
+        input_schema:
+          type: object
+          description: JSON Schema (Draft 2020-12) for params.
+          additionalProperties: true
+        price_formula:
+          type: string
+        examples:
+          type: array
+          items: { $ref: '#/components/schemas/ManifestExample' }
+        tags:
+          type: array
+          items: { type: string }
+        order:
+          type: integer
+
+    ManifestExample:
+      type: object
+      required: [title, params]
+      properties:
+        title: { type: string }
+        description: { type: string }
+        params:
+          type: object
+          additionalProperties: true
+
+    WalletBalance:
+      type: object
+      required: [balance]
+      properties:
+        balance:
+          type: integer
+          format: int64
+          description: Current balance in micro-USD.
+        held:
+          type: integer
+          format: int64
+          description: Sum of credits reserved by in-flight tasks.
+
+    User:
+      type: object
+      required: [id, email]
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+
+  responses:
+    BadRequest:
+      description: Malformed request.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid token.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Authenticated but not allowed.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { $ref: '#/components/schemas/Error' }
+    PaymentRequired:
+      description: Insufficient credits.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { $ref: '#/components/schemas/Error' }
+    Unavailable:
+      description: Provider misconfigured or temporarily unreachable.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { $ref: '#/components/schemas/Error' }
+
+security:
+  - bearerAuth: []

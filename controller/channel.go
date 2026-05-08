@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/internal/modality"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay/channel/gemini"
 	"github.com/QuantumNous/new-api/relay/channel/ollama"
@@ -624,6 +625,21 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 				return fmt.Errorf("Codex key JSON must include account_id")
 			}
 		}
+	}
+
+	// S3: Modality + TaskKind validation. Both fields are NULLABLE on input
+	// per BLUEPRINT.md §S3 — empty string defaults to "llm" / "streaming"
+	// for backwards compatibility with the inherited LLM-only schema. Any
+	// non-empty value MUST parse as a known enum or the request is rejected.
+	if normalized, ok := modality.ParseModality(channel.Modality); ok {
+		channel.Modality = string(normalized)
+	} else {
+		return fmt.Errorf("invalid modality: %q (allowed: image, video, audio, edit, llm)", channel.Modality)
+	}
+	if normalized, ok := modality.ParseTaskKind(channel.TaskKind); ok {
+		channel.TaskKind = string(normalized)
+	} else {
+		return fmt.Errorf("invalid task_kind: %q (allowed: sync, async, streaming)", channel.TaskKind)
 	}
 
 	return nil
