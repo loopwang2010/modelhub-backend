@@ -151,15 +151,6 @@ func TestLocalDiskStore_Put_RespectsCtxCancel(t *testing.T) {
 	}
 }
 
-func TestS3Store_Stub_ReturnsNotConfigured(t *testing.T) {
-	t.Parallel()
-	s := &S3Store{Bucket: "bkt", Region: "r", PublicURLPrefix: "https://cdn.modelhub.com/"}
-	_, err := s.Put(context.Background(), "outputs/x/y.bin", "x", strings.NewReader("z"))
-	if !errors.Is(err, ErrStorageNotConfigured) {
-		t.Errorf("S3Store.Put: want ErrStorageNotConfigured, got %v", err)
-	}
-}
-
 func mustLocalStore(t *testing.T) *LocalDiskStore {
 	t.Helper()
 	st, err := NewLocalDiskStore(t.TempDir(), "https://cdn.modelhub.local/")

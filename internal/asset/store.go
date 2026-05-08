@@ -6,9 +6,8 @@
 //   - LocalDiskStore: writes to a local filesystem directory; suitable
 //     for dev mode + tests; stable URL surface (file://-style or a
 //     configurable public URL prefix).
-//   - S3Store: skeleton + ErrNotConfigured stub. Production wiring
-//     against aws-sdk-go-v2/service/s3 is intentionally deferred to a
-//     follow-up step (see S9.5 agent report — open question §1).
+//   - S3Store: production R2/S3-compatible client built on aws-sdk-go-v2.
+//     See s3_store.go.
 //
 // AP-13 guard: every Put MUST stream from io.Reader, never buffer the
 // full payload in memory. Callers (the AssetWorker) wire the upstream
@@ -174,36 +173,6 @@ func (s *LocalDiskStore) lockForKey(key string) *sync.Mutex {
 	l := &sync.Mutex{}
 	s.keyLocks[key] = l
 	return l
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// S3Store skeleton
-// ─────────────────────────────────────────────────────────────────────────
-
-// S3Store is the production target for hosted assets. The skeleton ships
-// in S9.5; the actual aws-sdk-go-v2/service/s3 wiring is a follow-up
-// (see S9.5-AGENT-REPORT.md §1 open question).
-//
-// The skeleton documents the production env-var contract:
-//
-//	S3_BUCKET                — required
-//	S3_REGION                — required
-//	S3_ENDPOINT              — optional; used for MinIO + R2-style endpoints
-//	S3_PUBLIC_URL_PREFIX     — required; e.g. "https://cdn.modelhub.com/"
-//	AWS_ACCESS_KEY_ID        — required
-//	AWS_SECRET_ACCESS_KEY    — required
-type S3Store struct {
-	Bucket          string
-	Region          string
-	Endpoint        string
-	PublicURLPrefix string
-}
-
-// Put implements Storage. Until the SDK wiring lands, returns
-// ErrStorageNotConfigured so a misconfigured deployment fails fast at
-// upload time rather than silently dropping bytes.
-func (s *S3Store) Put(ctx context.Context, key string, contentType string, body io.Reader) (*PutResult, error) {
-	return nil, fmt.Errorf("asset: S3Store.Put not yet wired; see open question §1: %w", ErrStorageNotConfigured)
 }
 
 // ─────────────────────────────────────────────────────────────────────────
