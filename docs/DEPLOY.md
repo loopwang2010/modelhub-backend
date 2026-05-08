@@ -94,6 +94,49 @@ MODELHUB_URL=https://modelhub.example.com \
 | `DEV_MODE` | `=mock` to boot without keys | unset |
 | `GOPROXY` | `goproxy.cn` for China devs | unset (default proxy.golang.org) |
 
+## Object storage configuration
+
+Modelhub ships two `internal/asset.Storage` implementations:
+
+- `LocalDiskStore` — local filesystem; default for dev mode + tests.
+- `S3Store` — production R2 / S3-compatible client (Sprint 2 / R2). Built on `aws-sdk-go-v2`. Default deployment target is **Cloudflare R2** for zero-egress economics; the same client also works against AWS S3 and MinIO when given the right `Endpoint`.
+
+### S3Store env vars (Cloudflare R2 defaults)
+
+| Var | Required | Notes |
+|-----|----------|-------|
+| `R2_ACCOUNT_ID` | yes (R2) | Cloudflare account ID. Used to synthesize the endpoint `https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com` when `R2_ENDPOINT` is unset. |
+| `R2_ENDPOINT` | optional | Explicit S3 API endpoint. Overrides the synthesized R2 URL. Required for non-R2 services (AWS S3 with custom endpoint, MinIO). |
+| `R2_BUCKET` | yes | Bucket name. |
+| `R2_ACCESS_KEY_ID` | yes | R2 API token access key ID. |
+| `R2_SECRET_ACCESS_KEY` | yes | R2 API token secret. **Never commit.** |
+| `R2_PUBLIC_URL_BASE` | optional | Public URL prefix when the bucket is fronted by a custom domain (R2 "Public Bucket" or a Worker). MUST end with `/`. When unset, `S3Store.Put` returns a 15-minute presigned URL instead. |
+| `R2_REGION` | optional | Defaults to `auto`. Required for R2 to be `auto`. |
+| `R2_PRESIGN_TTL` | optional | Lifetime of presigned GET URLs (Go `time.Duration` string, e.g. `15m`). Default 15m. |
+
+R2-specific quirks the client handles automatically:
+
+- `Region: "auto"` — R2 doesn't use AWS regions.
+- `UsePathStyle: true` — virtual-hosted-style addressing breaks for some bucket names; path-style is the safer default and works for AWS S3 + MinIO too.
+- Custom endpoint via `BaseEndpoint` on the SDK options.
+
+### Running the R2 integration test
+
+The unit suite mocks the AWS clients so `go test ./internal/asset/...` never touches the network. To exercise the real R2 path locally:
+
+```bash
+export R2_INTEGRATION=1
+export R2_ACCOUNT_ID=...           # or set R2_ENDPOINT directly
+export R2_ACCESS_KEY_ID=...
+export R2_SECRET_ACCESS_KEY=...
+export R2_BUCKET=modelhub-outputs-staging
+export R2_PUBLIC_URL_BASE=https://cdn.modelhub.example/   # optional
+
+go test ./internal/asset/... -run TestS3Store_Integration -v -count=1
+```
+
+The test uploads a tiny text object to a unique key under `outputs/t7-integration/`, then HEAD-checks it. It never deletes — clean up with `aws s3 rm` or the R2 dashboard.
+
 ## Open questions before production launch
 
 These map to BLUEPRINT.md §7 questions:
