@@ -22,7 +22,7 @@ import (
 	"context"
 	"errors"
 	"log"
-	"sync"
+	"time"
 
 	"github.com/QuantumNous/new-api/internal/adapter"
 	"github.com/QuantumNous/new-api/internal/events"
@@ -38,33 +38,52 @@ type AssetCostFractionFunc func(ctx context.Context, taskID string) (float64, er
 
 // Subscriber wires a Wallet to an EventBus.
 //
-// State: holds a small in-memory map of (taskID → ActualCost) populated by
+// State: a PendingCostStore stages (taskID → ActualCost) populated by
 // TaskSucceeded events. AssetHosted later reads this to call Settle with
-// the right amount. The map is bounded by how many tasks are between
-// TaskSucceeded and AssetHosted at any instant — typically seconds, so
-// the map stays small. For multi-instance deployments this needs to be
-// promoted to a shared store (Redis / DB).
+// the right amount. The store implementation is injected — InMemory for
+// single-instance dev, Redis for multi-replica production. See
+// pendingstore.go for the contract.
 type Subscriber struct {
 	w                 Wallet
 	bus               events.EventBus
 	assetCostFraction AssetCostFractionFunc
 	unsubscribe       events.Unsubscribe
 
-	costMu      sync.Mutex
-	pendingCost map[string]adapter.CostUSD
+	// pendingCost stages cost between TaskSucceeded and AssetHosted.
+	// Always non-nil; defaults to InMemoryPendingStore via NewSubscriber.
+	pendingCost PendingCostStore
+
+	// pendingTTL controls how long staged costs survive before being
+	// auto-evicted. Defaults to DefaultPendingTTL.
+	pendingTTL time.Duration
 
 	// errLogger receives non-fatal subscriber errors. Default: stdlib log.
 	errLogger func(format string, args ...any)
 }
 
-// NewSubscriber constructs a Subscriber. fractionFn is invoked on AssetLost
-// to decide the compute/asset split. If nil, defaults to 0.5.
+// NewSubscriber constructs a Subscriber backed by an in-memory pending-cost
+// store (preserves the original single-instance semantics). For multi-
+// instance deployments use NewSubscriberWithStore with a Redis-backed
+// PendingCostStore.
+//
+// fractionFn is invoked on AssetLost to decide the compute/asset split.
+// If nil, defaults to 0.5.
 func NewSubscriber(w Wallet, bus events.EventBus, fractionFn AssetCostFractionFunc) *Subscriber {
+	return NewSubscriberWithStore(w, bus, fractionFn, NewInMemoryPendingStore())
+}
+
+// NewSubscriberWithStore is the injection-friendly constructor used in
+// production wiring (where the pending-cost store may be Redis-backed)
+// and in tests (where mocks may be substituted). store MUST be non-nil.
+func NewSubscriberWithStore(w Wallet, bus events.EventBus, fractionFn AssetCostFractionFunc, store PendingCostStore) *Subscriber {
 	if w == nil {
 		panic("wallet: NewSubscriber requires non-nil wallet")
 	}
 	if bus == nil {
 		panic("wallet: NewSubscriber requires non-nil bus")
+	}
+	if store == nil {
+		panic("wallet: NewSubscriberWithStore requires non-nil store")
 	}
 	if fractionFn == nil {
 		fractionFn = func(_ context.Context, _ string) (float64, error) { return 0.5, nil }
@@ -73,8 +92,18 @@ func NewSubscriber(w Wallet, bus events.EventBus, fractionFn AssetCostFractionFu
 		w:                 w,
 		bus:               bus,
 		assetCostFraction: fractionFn,
-		pendingCost:       make(map[string]adapter.CostUSD),
+		pendingCost:       store,
+		pendingTTL:        DefaultPendingTTL,
 		errLogger:         func(format string, args ...any) { log.Printf("wallet: "+format, args...) },
+	}
+}
+
+// SetPendingTTL overrides the TTL used when staging costs from
+// TaskSucceeded. Safe to call before Start; not safe to call concurrently
+// with running event delivery.
+func (s *Subscriber) SetPendingTTL(ttl time.Duration) {
+	if ttl > 0 {
+		s.pendingTTL = ttl
 	}
 }
 
@@ -100,9 +129,13 @@ func (s *Subscriber) handle(ctx context.Context, ev events.Event) {
 	switch e := ev.(type) {
 	case events.TaskSucceeded:
 		// Cache ActualCost so AssetHosted (which doesn't carry cost) can use it.
-		s.costMu.Lock()
-		s.pendingCost[string(e.GetTaskID())] = adapter.CostUSD(e.ActualCost)
-		s.costMu.Unlock()
+		taskID := string(e.GetTaskID())
+		if err := s.pendingCost.Set(ctx, taskID, adapter.CostUSD(e.ActualCost), s.pendingTTL); err != nil {
+			// Set failure means AssetHosted later will fall through to the
+			// "without prior TaskSucceeded" refund path. Log so ops can
+			// see Redis hiccups without dropping the event.
+			s.errLogger("TaskSucceeded pendingCost.Set failed task=%s: %v", taskID, err)
+		}
 	case events.AssetHosted:
 		s.onAssetHosted(ctx, e)
 	case events.AssetLost:
@@ -124,12 +157,20 @@ func (s *Subscriber) onAssetHosted(ctx context.Context, e events.AssetHosted) {
 	escrow := EscrowID(taskID)
 
 	// Look up cached ActualCost from the prior TaskSucceeded.
-	s.costMu.Lock()
-	actual, ok := s.pendingCost[taskID]
-	if ok {
-		delete(s.pendingCost, taskID)
+	actual, ok, err := s.pendingCost.Get(ctx, taskID)
+	if err != nil {
+		// Treat transport errors as a miss and refund — same fail-safe
+		// posture as the F9 fix below: better to refund than to guess.
+		s.errLogger("AssetHosted pendingCost.Get failed task=%s: %v", taskID, err)
+		ok = false
 	}
-	s.costMu.Unlock()
+	if ok {
+		// Best-effort cleanup; failure here just means the entry survives
+		// until TTL. Not worth blocking the Settle on it.
+		if err := s.pendingCost.Delete(ctx, taskID); err != nil {
+			s.errLogger("AssetHosted pendingCost.Delete failed task=%s: %v", taskID, err)
+		}
+	}
 
 	if !ok {
 		// AssetHosted without prior TaskSucceeded — only happens if events

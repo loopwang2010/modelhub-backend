@@ -44,11 +44,12 @@ import (
 // ─────────────────────────────────────────────────────────────────────────
 
 var (
-	walletMu       sync.RWMutex
-	walletInstance wallet.Wallet
-	walletRawDB    *sql.DB // for raw history queries that wallet.Wallet doesn't expose
-	walletDialect  wallet.Dialect
-	walletDisabled bool // true when wallet is unwired
+	walletMu           sync.RWMutex
+	walletInstance     wallet.Wallet
+	walletRawDB        *sql.DB // for raw history queries that wallet.Wallet doesn't expose
+	walletDialect      wallet.Dialect
+	walletDisabled     bool                     // true when wallet is unwired
+	walletPendingStore wallet.PendingCostStore  // F5: shared store for the wallet subscriber
 )
 
 // SetWallet installs a wallet instance. Used by main.go in production and
@@ -60,6 +61,29 @@ func SetWallet(w wallet.Wallet, db *sql.DB, dialect wallet.Dialect) {
 	walletRawDB = db
 	walletDialect = dialect
 	walletDisabled = (w == nil)
+}
+
+// SetWalletPendingStore installs the PendingCostStore that the wallet
+// subscriber will use to bridge TaskSucceeded → AssetHosted. Defaults
+// to in-memory when WALLET_PENDING_STORE is unset; switches to Redis
+// when WALLET_PENDING_STORE=redis (with REDIS_URL configured).
+//
+// Stored on the controller package so the eventual subscriber wiring
+// (when EventBus startup lands in main.go) can read the same instance.
+func SetWalletPendingStore(store wallet.PendingCostStore) {
+	walletMu.Lock()
+	defer walletMu.Unlock()
+	walletPendingStore = store
+}
+
+// GetWalletPendingStore returns the configured pending-cost store, or
+// nil if SetWalletPendingStore was never called. Exposed so the
+// subscriber wiring (and tests) can resolve the singleton without
+// re-reading env.
+func GetWalletPendingStore() wallet.PendingCostStore {
+	walletMu.RLock()
+	defer walletMu.RUnlock()
+	return walletPendingStore
 }
 
 // getWallet returns the configured wallet, or nil if not wired.
