@@ -81,4 +81,4 @@ Test uploads `outputs/t7-integration/{unix_nano}.txt` and `HEAD`-checks it. Clea
 
 `feat(asset): R2 S3Store implementation using aws-sdk-go-v2`
 
-SHA: <will be filled in by the commit step>
+SHA: `19899d61`
