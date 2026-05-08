@@ -31,6 +31,7 @@ var expectedTransitions = map[TaskState]map[TaskState]bool{
 		StateSubmitted: true,
 		StateFailed:    true,
 		StateCancelled: true, // C2
+		StateTimedOut:  true, // F8: reconciler rescues SLA-expired Held tasks
 	},
 	StateSubmitted: {
 		StateRunning:   true,

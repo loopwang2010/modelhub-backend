@@ -318,14 +318,9 @@ func TestReconciler_SweepStuck_ReschedulesExpiredTask(t *testing.T) {
 }
 
 // sweepTimedOut transitions a submitted task past its SLA deadline →
-// StateTimedOut and emits TaskTimedOut on the bus.
-//
-// Latent FSM note: FindTimedOutSQL selects rows with state IN
-// ('held', 'submitted', 'running'), but the transition table only allows
-// Submitted/Running → TimedOut. A task stuck in Held past its SLA gets
-// silently skipped on every reconciler tick (the err != nil branch in
-// sweepTimedOut just `continue`s). Tracked as a Sprint-2 follow-up
-// alongside the F2/F3 list.
+// StateTimedOut and emits TaskTimedOut on the bus. F8 fix added the
+// Held → TimedOut FSM edge so the same path also rescues tasks stuck in
+// Held — verified by TestReconciler_SweepTimedOut_RescuesStuckHeld below.
 func TestReconciler_SweepTimedOut_TransitionsAndEmits(t *testing.T) {
 	db, repo, cleanup := newTestDB(t)
 	defer cleanup()
@@ -385,6 +380,44 @@ func TestReconciler_SweepTimedOut_SkipsAlreadyTerminal(t *testing.T) {
 	rec.SweepOnce(context.Background())
 	if got := recorded.ByKind("task_timed_out"); len(got) != 0 {
 		t.Errorf("second sweep emitted %d TaskTimedOut; want 0", len(got))
+	}
+}
+
+// F8 regression test: a task stuck in Held past its SLA must be rescued
+// by sweepTimedOut. Before the F8 fix this silently looped forever in
+// the err != nil branch.
+func TestReconciler_SweepTimedOut_RescuesStuckHeld(t *testing.T) {
+	db, repo, cleanup := newTestDB(t)
+	defer cleanup()
+	bus := events.NewMemoryBus()
+	defer bus.Close()
+	rec := NewReconciler(repo, bus)
+	recorded := newRecordedEvents(bus)
+
+	// Create + Held only — never submitted. Then expire its SLA.
+	task, err := repo.Create(context.Background(), newTestTaskParams("held-stuck"))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := repo.MarkHeld(context.Background(), task.ID, 60_000); err != nil {
+		t.Fatalf("MarkHeld: %v", err)
+	}
+	past := time.Now().UTC().Add(-30 * time.Minute)
+	if _, err := db.Exec(`UPDATE task SET sla_deadline = $1 WHERE id = $2`, past, task.ID); err != nil {
+		t.Fatalf("set sla_deadline: %v", err)
+	}
+
+	rec.SweepOnce(context.Background())
+
+	out, err := repo.FindByID(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("re-find: %v", err)
+	}
+	if out.State != StateTimedOut {
+		t.Errorf("Held-stuck task not rescued: state = %q; want timed_out", out.State)
+	}
+	if got := recorded.ByKind("task_timed_out"); len(got) != 1 {
+		t.Errorf("expected 1 TaskTimedOut for rescued held task; got %d", len(got))
 	}
 }
 

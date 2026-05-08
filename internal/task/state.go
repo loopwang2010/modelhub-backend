@@ -137,6 +137,11 @@ var transitions = map[TaskState][]TaskState{
 		StateSubmitted,
 		StateFailed,    // Submit returned non-2xx, or sync inline-failure
 		StateCancelled, // C2 fix: user cancelled mid-Submit (race)
+		StateTimedOut,  // F8 fix: reconciler rescues a task stuck in Held
+		// past its SLA. FindTimedOutSQL already includes 'held'; without
+		// this edge, the reconciler would FindTimedOut the row, fail the
+		// MarkTimedOut transition, and silently `continue` on every tick —
+		// leaking a held escrow forever.
 	},
 	StateSubmitted: {
 		StateRunning,
