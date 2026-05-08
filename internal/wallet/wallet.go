@@ -132,7 +132,7 @@ type Wallet interface {
 type AccountID string
 
 // AccountKind enumerates the wallet_account.kind ENUM values.
-// Mirrors the SQL enum in 0003_wallet_ledger.sql.
+// Mirrors the SQL enum in 0004_wallet_ledger.sql.
 type AccountKind string
 
 const (

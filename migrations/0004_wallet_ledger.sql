@@ -1,4 +1,4 @@
--- 0003_wallet_ledger.sql
+-- 0004_wallet_ledger.sql
 --
 -- S6: credit wallet — double-entry ledger.
 --

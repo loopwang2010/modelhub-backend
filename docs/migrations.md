@@ -60,13 +60,17 @@ migrations/
   0001_baseline.sql
   0002_task_runtime_columns.sql           (S5 — landed first)
   0003_channel_modality.sql               (S3 — modality + task_kind on channels)
-  0004_wallet_ledger.sql                  (S6 — pending)
+  0004_wallet_ledger.sql                  (S6 — landed; renamed from 0003 to resolve collision with 0003_channel_modality)
+  0005_task_output_url.sql                (S9.5 — landed)
   ...
 ```
 
 Note: the order in this list reflects the actual on-disk migrations, not
 the BLUEPRINT step order — S5 landed before S3 in the parallel-agent wave,
-so S5 took the 0002 slot and S3 took 0003.
+so S5 took the 0002 slot and S3 took 0003. The wallet ledger migration
+shipped as 0003 in its original commit and was renamed to 0004 post-merge
+when the goose version collision with the channel-modality migration was
+caught during code review.
 
 - 4-digit zero-padded version, monotonically increasing
 - snake_case description after the version
