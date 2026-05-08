@@ -202,6 +202,31 @@ func initModelhubWallet() {
 	w := wallet.New(sqlDB, dialect)
 	controller.SetWallet(w, sqlDB, dialect)
 	common.SysLog("modelhub: wallet wired (PostgreSQL dialect)")
+	initModelhubPendingStore()
+}
+
+// initModelhubPendingStore builds the wallet PendingCostStore based on
+// WALLET_PENDING_STORE env var (default: in-memory). When set to "redis"
+// REDIS_URL must point to a reachable Redis instance — see ADR-005 +
+// Sprint 2 F5 follow-up.
+//
+// The selector is exposed via wallet.NewPendingStoreFromEnv so unit tests
+// don't need to read process env. The chosen store is held on the wallet
+// controller layer alongside the *DBWallet, ready for the subscriber
+// wiring step (added when EventBus startup lands in main.go).
+func initModelhubPendingStore() {
+	store, err := wallet.NewPendingStoreFromEnv(os.Getenv)
+	if err != nil {
+		common.SysLog("modelhub: wallet pending-cost store init failed (" + err.Error() + "); subscriber will not start")
+		return
+	}
+	controller.SetWalletPendingStore(store)
+	switch store.(type) {
+	case *wallet.RedisPendingStore:
+		common.SysLog("modelhub: wallet pending-cost store = redis")
+	default:
+		common.SysLog("modelhub: wallet pending-cost store = in-memory")
+	}
 }
 
 func InjectUmamiAnalytics() {
