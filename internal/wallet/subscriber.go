@@ -133,10 +133,22 @@ func (s *Subscriber) onAssetHosted(ctx context.Context, e events.AssetHosted) {
 
 	if !ok {
 		// AssetHosted without prior TaskSucceeded — only happens if events
-		// were dropped or re-delivered out of order. Settle for 0 (no
-		// charge); if a late TaskSucceeded arrives the second Settle is
-		// a benign idempotent no-op (escrow already drained).
-		s.errLogger("AssetHosted without prior TaskSucceeded for task=%s; settling for 0", taskID)
+		// were dropped or re-delivered out of order. We don't know the
+		// actual cost, so refund the user instead of guessing zero.
+		//
+		// F9 fix: previously called Settle(escrow, 0) here. That violated
+		// the wallet_ledger CHECK(amount<>0) constraint at the drain row
+		// for any *funded* escrow — the only reason it didn't surface in
+		// production was that the escrow was almost always already drained
+		// (replay) so Settle returned ErrEscrowAlreadySettled first.
+		s.errLogger("AssetHosted without prior TaskSucceeded for task=%s; refunding", taskID)
+		if err := s.w.Refund(ctx, escrow); err != nil {
+			if errors.Is(err, ErrEscrowAlreadySettled) {
+				return // benign: escrow was already drained by a prior Settle/Refund
+			}
+			s.errLogger("AssetHosted fallback-Refund failed task=%s: %v", taskID, err)
+		}
+		return
 	}
 
 	if err := s.w.Settle(ctx, escrow, actual); err != nil {

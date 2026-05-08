@@ -635,35 +635,60 @@ func TestSubscriber_HappyPath_TaskSucceededThenAssetHosted(t *testing.T) {
 	}
 }
 
-func TestSubscriber_AssetHostedWithoutPriorSucceededLogsWarning(t *testing.T) {
+func TestSubscriber_AssetHostedWithoutPriorSucceededRefundsAndLogs(t *testing.T) {
 	h, cleanup := newSubscriberHarness(t, nil)
 	defer cleanup()
 
 	// AssetHosted for a task that was never held: subscriber logs the
-	// "without prior TaskSucceeded" warning, then calls Settle(escrow, 0).
-	// Settle sees held=0 and returns ErrEscrowAlreadySettled, which the
+	// "without prior TaskSucceeded" warning, then calls Refund(escrow).
+	// Refund sees held=0 and returns ErrEscrowAlreadySettled, which the
 	// subscriber swallows. No ledger rows are written.
-	//
-	// Latent S6 note (not exercised here): if a *funded* escrow received
-	// AssetHosted without prior TaskSucceeded, the Settle(0) call would
-	// hit the wallet_ledger CHECK(amount<>0) constraint at the drain row.
-	// Tracked alongside TestSettleIdempotentReplay's S6 follow-up.
 	publish(t, h.bus, events.MakeAssetHosted(events.NewBaseEvent("t-noprior"),
 		"https://cdn.example.com/x.png", 1024))
 
 	if !h.logs.any("AssetHosted without prior TaskSucceeded") {
 		t.Errorf("expected warning log; got %v", h.logs.logs)
 	}
-	if h.logs.any("Settle failed") {
-		t.Errorf("Settle should swallow ErrEscrowAlreadySettled silently; got %v", h.logs.logs)
+	if h.logs.any("fallback-Refund failed") {
+		t.Errorf("Refund should swallow ErrEscrowAlreadySettled silently; got %v", h.logs.logs)
 	}
-	// No ledger rows for the never-held escrow.
 	var n int
 	if err := h.w.db.QueryRow(`SELECT COUNT(*) FROM wallet_ledger WHERE ref_task_id = $1`, "t-noprior").Scan(&n); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if n != 0 {
 		t.Errorf("expected 0 ledger rows for never-held task; got %d", n)
+	}
+}
+
+// F9 regression: a *funded* escrow that receives AssetHosted without a
+// prior TaskSucceeded must be fully refunded — not crash on the wallet
+// CHECK(amount<>0) constraint as the pre-fix Settle(escrow, 0) path did.
+func TestSubscriber_AssetHostedWithoutPriorSucceeded_FundedEscrowRefunds(t *testing.T) {
+	h, cleanup := newSubscriberHarness(t, nil)
+	defer cleanup()
+	ctx := context.Background()
+
+	mustTopup(t, h.w, testUser, 1.0)
+	if _, err := h.w.Hold(ctx, testUser, "t-funded-noprior", 500_000, "idem-fnp"); err != nil {
+		t.Fatalf("Hold: %v", err)
+	}
+	publish(t, h.bus, events.MakeAssetHosted(events.NewBaseEvent("t-funded-noprior"),
+		"https://cdn.example.com/x.png", 1024))
+
+	if !h.logs.any("without prior TaskSucceeded") {
+		t.Errorf("expected warning log; got %v", h.logs.logs)
+	}
+	if h.logs.any("fallback-Refund failed") || h.logs.any("Settle failed") {
+		t.Errorf("fallback Refund should not error; got %v", h.logs.logs)
+	}
+	bal, _ := h.w.Balance(ctx, testUser)
+	if bal != 1_000_000 {
+		t.Errorf("balance = %d; want 1_000_000 (full refund)", bal)
+	}
+	escrowBal, _ := h.w.Balance(ctx, AccountID(EscrowID("t-funded-noprior")))
+	if escrowBal != 0 {
+		t.Errorf("escrow balance = %d; want 0 (drained by refund)", escrowBal)
 	}
 }
 
@@ -822,9 +847,9 @@ func TestSubscriber_ReplayedAssetHostedIsBenign(t *testing.T) {
 	}
 
 	// Replay: pendingCost was consumed by call #1, so the warning fires;
-	// Settle then sees held=0 (escrow drained) → ErrEscrowAlreadySettled →
-	// subscriber's errors.Is branch returns silently. No new ledger rows,
-	// no Settle-failed log.
+	// the F9 fallback Refund then sees held=0 (escrow drained) →
+	// ErrEscrowAlreadySettled → subscriber's errors.Is branch returns
+	// silently. No new ledger rows, no error logs.
 	publish(t, h.bus, events.MakeAssetHosted(events.NewBaseEvent("t-rep"),
 		"https://cdn.example.com/x.png", 1024))
 
@@ -835,8 +860,8 @@ func TestSubscriber_ReplayedAssetHostedIsBenign(t *testing.T) {
 	if rowsAfter != rowsBefore {
 		t.Errorf("replay added %d ledger rows; want 0", rowsAfter-rowsBefore)
 	}
-	if h.logs.any("Settle failed") {
-		t.Errorf("Settle replay should be silent; got %v", h.logs.logs)
+	if h.logs.any("fallback-Refund failed") || h.logs.any("Settle failed") {
+		t.Errorf("replay should be silent; got %v", h.logs.logs)
 	}
 }
 
