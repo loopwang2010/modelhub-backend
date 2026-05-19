@@ -55,8 +55,8 @@ type GenerationRequest struct {
 
 	// IdempotencyKey, when set on the request, is forwarded as a hint
 	// to the adapter (see adapter.IdempotencyKey doc for semantics).
-	// When unset, the worker auto-derives one from
-	// (account_id, model, canonical_params, time_bucket).
+	// When unset, the controller mints a unique per-generation upstream
+	// hint and does not deduplicate otherwise identical requests.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 
 	// Webhook (optional) is a URL we POST to when an async task reaches a

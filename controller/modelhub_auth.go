@@ -23,6 +23,7 @@ package controller
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -36,6 +37,7 @@ import (
 	"github.com/QuantumNous/new-api/internal/wallet"
 	"github.com/QuantumNous/new-api/model"
 
+	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 )
 
@@ -461,4 +463,229 @@ func parseLimit(raw string) int {
 		return maxHistoryLimit
 	}
 	return n
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// /v1/auth/{register,login,logout} — modelhub-shaped auth wrappers
+// ─────────────────────────────────────────────────────────────────────────
+//
+// The inherited new-api auth lives at /api/user/{register,login,logout} with
+// {username, password} bodies and the {success, message} envelope. The
+// modelhub-web SPA (packages/studio/src/modelhub-client.js) was written
+// against an /v1/auth/* surface with {email, password} bodies and the
+// modelhub {success, data|error} envelope. S11 mounted /v1/auth/me but the
+// register/login/logout wrappers were never landed — this file closes the
+// gap. The handlers reuse model.User.Insert / ValidateAndFill so password
+// hashing and uniqueness checks stay on the inherited code path; the only
+// translation is body shape, response envelope, and post-register auto-login.
+
+const minPasswordLen = 8
+
+// modelhubAuthRequest matches modelhub-client's register/login POST body.
+type modelhubAuthRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// ModelhubRegister handles POST /v1/auth/register. Username is set to the
+// email (S11 design intent — AuthMe returns both as the same logical value
+// for modelhub users). On success the session is set immediately so the
+// frontend's follow-up getMe() succeeds without a separate login round-trip.
+func ModelhubRegister(c *gin.Context) {
+	if !common.RegisterEnabled || !common.PasswordRegisterEnabled {
+		modelhubErr(c, http.StatusForbidden, "registration_disabled", "registration is currently disabled")
+		return
+	}
+
+	req, ok := decodeAuthBody(c)
+	if !ok {
+		return
+	}
+	if len(req.Password) < minPasswordLen {
+		modelhubErr(c, http.StatusBadRequest, "invalid_password",
+			fmt.Sprintf("password must be at least %d characters", minPasswordLen))
+		return
+	}
+
+	exists, err := model.CheckUserExistOrDeleted(req.Email, req.Email)
+	if err != nil {
+		common.SysLog(fmt.Sprintf("modelhub register: CheckUserExistOrDeleted: %v", err))
+		modelhubErr(c, http.StatusInternalServerError, "internal", "registration check failed")
+		return
+	}
+	if exists {
+		modelhubErr(c, http.StatusConflict, "user_exists", "an account with this email already exists")
+		return
+	}
+
+	newUser := model.User{
+		Username:    req.Email,
+		Password:    req.Password,
+		DisplayName: req.Email,
+		Email:       req.Email,
+		Role:        common.RoleCommonUser,
+	}
+	if err := newUser.Insert(0); err != nil {
+		common.SysLog(fmt.Sprintf("modelhub register: Insert: %v", err))
+		modelhubErr(c, http.StatusInternalServerError, "registration_failed", err.Error())
+		return
+	}
+
+	var inserted model.User
+	if err := model.DB.Where("username = ?", req.Email).First(&inserted).Error; err != nil {
+		modelhubErr(c, http.StatusInternalServerError, "registration_followup_failed", "could not load newly created user")
+		return
+	}
+
+	// S11: provision wallet account. No-op when wallet not wired (SQLite dev).
+	ensureWalletAccountForUser(c.Request.Context(), inserted.Id)
+
+	if err := modelhubSetupSession(c, &inserted); err != nil {
+		modelhubErr(c, http.StatusInternalServerError, "session_save_failed", err.Error())
+		return
+	}
+	respondAuthSuccess(c, &inserted)
+}
+
+// ModelhubLogin handles POST /v1/auth/login. Username for the inherited
+// ValidateAndFill is the email (matches Register above).
+func ModelhubLogin(c *gin.Context) {
+	if !common.PasswordLoginEnabled {
+		modelhubErr(c, http.StatusForbidden, "login_disabled", "password login is currently disabled")
+		return
+	}
+
+	req, ok := decodeAuthBody(c)
+	if !ok {
+		return
+	}
+
+	user := model.User{Username: req.Email, Password: req.Password}
+	if err := user.ValidateAndFill(); err != nil {
+		// Deliberately collapse "no such user" + "wrong password" to one
+		// message to avoid leaking which emails are registered.
+		modelhubErr(c, http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
+		return
+	}
+	// Sprint 1 doesn't ship a 2FA flow in the modelhub SPA. Inherited
+	// /api/user/login still handles 2FA for the admin UI — both paths
+	// share the same model.User row, so a 2FA-protected account can keep
+	// using the admin UI; the modelhub bridge just doesn't surface the
+	// 2FA prompt yet.
+	if err := modelhubSetupSession(c, &user); err != nil {
+		modelhubErr(c, http.StatusInternalServerError, "session_save_failed", err.Error())
+		return
+	}
+	respondAuthSuccess(c, &user)
+}
+
+// ModelhubLogout handles POST /v1/auth/logout. No auth required — clearing
+// a non-existent session is a no-op.
+func ModelhubLogout(c *gin.Context) {
+	session := sessions.Default(c)
+	session.Clear()
+	if err := session.Save(); err != nil {
+		modelhubErr(c, http.StatusInternalServerError, "session_save_failed", err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    gin.H{"logged_out": true},
+	})
+}
+
+// decodeAuthBody parses + normalizes the email/password body. Writes a 400
+// response and returns ok=false on malformed input.
+func decodeAuthBody(c *gin.Context) (modelhubAuthRequest, bool) {
+	var req modelhubAuthRequest
+	if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+		modelhubErr(c, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return req, false
+	}
+	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
+	if req.Email == "" || req.Password == "" {
+		modelhubErr(c, http.StatusBadRequest, "invalid_request", "email and password required")
+		return req, false
+	}
+	return req, true
+}
+
+// modelhubSetupSession mirrors controller.setupLogin (user.go:98-112) so
+// middleware.UserAuth picks up the same session keys regardless of which
+// login path the user took.
+func modelhubSetupSession(c *gin.Context, user *model.User) error {
+	session := sessions.Default(c)
+	session.Set("id", user.Id)
+	session.Set("username", user.Username)
+	session.Set("role", user.Role)
+	session.Set("status", user.Status)
+	session.Set("group", user.Group)
+	return session.Save()
+}
+
+// respondAuthSuccess writes the canonical modelhub auth envelope. Used by
+// register + login so /v1/auth/me and /v1/auth/{register,login} all return
+// the same shape (frontend treats them interchangeably for the "current
+// user" view).
+func respondAuthSuccess(c *gin.Context, user *model.User) {
+	accountID := wallet.UserAccountID(strconv.Itoa(user.Id))
+	balance := readBalanceMicroUSD(c.Request.Context(), accountID)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"user_id":           user.Id,
+			"account_id":        string(accountID),
+			"email":             user.Email,
+			"username":          user.Username,
+			"role":              user.Role,
+			"balance_micro_usd": int64(balance),
+		},
+	})
+}
+
+// modelhubErr writes the canonical modelhub error envelope.
+func modelhubErr(c *gin.Context, status int, code, message string) {
+	c.JSON(status, gin.H{
+		"success": false,
+		"error":   gin.H{"code": code, "message": message},
+	})
+}
+
+// ModelhubUserAuth is the SPA-friendly auth middleware for /v1/* routes.
+//
+// Why this instead of middleware.UserAuth:
+//   The inherited middleware.UserAuth (middleware/auth.go:160) is a double-
+//   factor check designed for the legacy admin UI: it requires BOTH a valid
+//   session cookie AND a "New-Api-User: <user-id>" request header that
+//   matches the session's user id. The modelhub SPA (modelhub-client.js)
+//   is intentionally cookie-only — withCredentials:true and no custom
+//   header — so it would always fail the second factor.
+//
+//   ModelhubUserAuth keeps the same session keys (id/username/role/group/
+//   status) that the SPA-facing handlers read via c.GetInt etc., so handler
+//   code stays identical regardless of which auth path mounted it.
+func ModelhubUserAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		session := sessions.Default(c)
+		id := session.Get("id")
+		if id == nil {
+			modelhubErr(c, http.StatusUnauthorized, "unauthenticated", "no session")
+			c.Abort()
+			return
+		}
+		status := session.Get("status")
+		if status != nil {
+			if s, ok := status.(int); ok && s == common.UserStatusDisabled {
+				modelhubErr(c, http.StatusForbidden, "user_disabled", "user account is disabled")
+				c.Abort()
+				return
+			}
+		}
+		c.Set("id", id)
+		c.Set("username", session.Get("username"))
+		c.Set("role", session.Get("role"))
+		c.Set("group", session.Get("group"))
+		c.Set("user_group", session.Get("group"))
+		c.Next()
+	}
 }

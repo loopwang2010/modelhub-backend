@@ -11,6 +11,7 @@ package router
 
 import (
 	"github.com/QuantumNous/new-api/controller"
+	modelhubapi "github.com/QuantumNous/new-api/internal/api"
 	"github.com/QuantumNous/new-api/middleware"
 
 	"github.com/gin-gonic/gin"
@@ -21,23 +22,40 @@ import (
 func SetModelhubRouter(router *gin.Engine) {
 	cors := middleware.ModelhubCORS()
 
-	// /v1/auth — auth identity probe. Login/Register stay on the inherited
-	// /api/user/login + /api/user/register (S11 doesn't replace them, just
-	// adds the modelhub-shaped /v1 endpoints in front of the same session
-	// store).
+	// /v1/auth — register/login/logout (modelhub-shaped {email,password}
+	// wrappers over the inherited new-api user model) + identity probe.
+	// register/login/logout share the same session store as the inherited
+	// /api/user/* routes, so accounts created here also work in the admin UI.
 	v1Auth := router.Group("/v1/auth")
 	v1Auth.Use(cors)
 	{
-		v1Auth.GET("/me", middleware.UserAuth(), controller.AuthMe)
+		v1Auth.POST("/register", controller.ModelhubRegister)
+		v1Auth.POST("/login", controller.ModelhubLogin)
+		v1Auth.POST("/logout", controller.ModelhubLogout)
+		// ModelhubUserAuth (cookie-only) instead of middleware.UserAuth
+		// (cookie + New-Api-User header). The SPA in modelhub-web is
+		// cookie-only by design — see ModelhubUserAuth godoc.
+		v1Auth.GET("/me", controller.ModelhubUserAuth(), controller.AuthMe)
 	}
 
 	// /v1/wallet — self-only views. Same session cookie.
 	v1Wallet := router.Group("/v1/wallet")
 	v1Wallet.Use(cors)
-	v1Wallet.Use(middleware.UserAuth())
+	v1Wallet.Use(controller.ModelhubUserAuth())
 	{
 		v1Wallet.GET("/balance", controller.WalletBalanceSelf)
 		v1Wallet.GET("/history", controller.WalletHistorySelf)
+	}
+
+	// Modelhub generation surface. /v1/models is already owned by relay.
+	v1Modelhub := router.Group("/v1")
+	v1Modelhub.Use(cors)
+	v1Modelhub.Use(controller.ModelhubUserAuth())
+	{
+		v1Modelhub.GET("/modelhub/models", controller.ModelhubListModels)
+		v1Modelhub.POST("/uploads", gin.WrapF(modelhubapi.CreateUpload()))
+		v1Modelhub.POST("/generations", controller.ModelhubSubmitGeneration)
+		v1Modelhub.GET("/generations/:id", controller.ModelhubGetGeneration)
 	}
 
 	// /admin/wallet — admin-only top-up + history view.

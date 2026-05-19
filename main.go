@@ -14,14 +14,15 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/controller"
+	"github.com/QuantumNous/new-api/internal/adapter/bestai"
 	"github.com/QuantumNous/new-api/internal/wallet"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/router"
 	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	_ "github.com/QuantumNous/new-api/setting/performance_setting" // 注册性能设置
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-contrib/sessions"
@@ -45,6 +46,11 @@ func main() {
 	if err != nil {
 		common.FatalLog("failed to initialize resources: " + err.Error())
 		return
+	}
+	if ok, err := bestai.BootstrapFromEnv(); err != nil {
+		common.SysLog("modelhub: bestai adapter skipped: " + err.Error())
+	} else if ok {
+		common.SysLog("modelhub: bestai adapter registered from environment")
 	}
 
 	common.SysLog("New API " + common.Version + " started")

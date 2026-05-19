@@ -18,7 +18,7 @@ This guide covers deploying modelhub-backend + modelhub-web behind nginx with Po
 - Docker 24+ + Docker Compose v2
 - A domain pointing at the host (cloudflare, etc.)
 - TLS cert + key (Let's Encrypt or self-signed for dev)
-- Provider credentials: `BFL_API_KEY`, `OPENAI_API_KEY`, GCP service account JSON
+- Provider credentials: `BFL_API_KEY`, `OPENAI_API_KEY`, GCP service account JSON, optional `BESTAI_BASE_URL` + `BESTAI_FLOW2API_API_KEY` + `BESTAI_OPENAI_API_KEY`
 
 ## First-time setup
 
@@ -94,6 +94,23 @@ MODELHUB_URL=https://modelhub.example.com \
 | `DEV_MODE` | `=mock` to boot without keys | unset |
 | `GOPROXY` | `goproxy.cn` for China devs | unset (default proxy.golang.org) |
 
+## bestai.codes / sub2api provider adapter
+
+Modelhub can register bestai.codes/sub2api as a native `ProviderAdapter` by setting:
+
+| Var | Required | Notes |
+|-----|----------|-------|
+| `BESTAI_BASE_URL` | yes | Base URL for sub2api, usually `https://bestai.codes`. |
+| `BESTAI_FLOW2API_API_KEY` | for flow2api models | API key whose sub2api group platform is `flow2api`. Used for Gemini/Imagen/Veo models through `/v1/chat/completions`. |
+| `BESTAI_OPENAI_API_KEY` | for OpenAI image models | API key whose sub2api group platform is `openai`. Used for `gpt-image-*` through `/v1/images/generations`. |
+| `BESTAI_TIMEOUT_SECONDS` | optional | Per-request timeout. Defaults to `900` seconds because image/video generation can be slow. |
+
+The adapter treats bestai/sub2api as the unified upstream. Flow2api models use the sub2api `flow2api` group through the OpenAI-compatible chat shape; GPT Image models use the sub2api `openai` group through the OpenAI images shape. Modelhub submits both through sub2api's durable async gateway (`/v1/async/chat/completions` or `/v1/async/images/generations`) and then polls `/v1/async/tasks/{id}`. The original sub2api sync endpoints remain available for other callers, but modelhub does not hold a long Cloudflare-facing request open for image/video generation. Do not route `gpt-image-*` through a flow2api group. Modelhub clients use `GET /v1/modelhub/models` for the catalog and `POST /v1/generations` for generation requests.
+
+Legacy env names remain accepted for rollback compatibility: `FLOW2API_BASE_URL`, `FLOW2API_API_KEY`, `FLOW2API_GPT_IMAGE_API_KEY`, and `FLOW2API_TIMEOUT_SECONDS`.
+
+`POST /v1/generations` returns `202` quickly with `status="queued"`; clients poll `GET /v1/generations/{id}` until the status is terminal. This avoids browser/dev-proxy timeout limits for slow video/image generations.
+
 ## Object storage configuration
 
 Modelhub ships two `internal/asset.Storage` implementations:
@@ -161,6 +178,8 @@ Check logs: `docker compose logs modelhub-backend`. Common causes:
 
 Backend can't reach upstream provider. Check:
 - Provider API key in `.env`
+- For bestai/sub2api flow2api models, `BESTAI_BASE_URL` and `BESTAI_FLOW2API_API_KEY`
+- For bestai/sub2api OpenAI image models, `BESTAI_BASE_URL` and `BESTAI_OPENAI_API_KEY`
 - Network egress from container (China deployments need GOPROXY for build, plus outbound HTTPS to api.bfl.ai / OpenAI / Google)
 
 ### Asset URLs are upstream URLs (AP-19 violation)
